@@ -1,6 +1,6 @@
 <template>
   <div class="card">
-    <h3>🏷 Tag Cloud <span class="muted" style="font-weight:400">(คลิก Tag เพื่อค้นหาภาพ)</span></h3>
+    <h3>🏷 Tag Cloud Boy <span class="muted" style="font-weight:400">(คลิก Tag เพื่อค้นหาภาพ)</span></h3>
     <div class="cloud" v-if="tags.length">
       <button v-for="t in tags" :key="t.name" :class="{ sel: t.name === selected }"
               :style="{ fontSize: size(t.count) + 'px', opacity: 0.6 + 0.4 * weight(t.count) }"
