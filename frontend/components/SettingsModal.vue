@@ -14,11 +14,11 @@
           </p>
         </div>
         <div class="card stack">
-          <label class="inline"><input type="checkbox" v-model="enabled" /> <b>ใช้ Vision AI (Claude)</b> เพื่อรู้ว่า "ในภาพมีอะไร"</label>
-          <p class="muted" style="margin:0">รูปจะถูกย่อแล้วส่งไปที่ api.anthropic.com ต้องต่ออินเทอร์เน็ตและมี API Key ถ้า AI ล้มเหลวจะใช้การวิเคราะห์ในเครื่องแทนอัตโนมัติ</p>
+          <label class="inline"><input type="checkbox" v-model="enabled" /> <b>ใช้ Vision AI (Google Gemini)</b> เพื่อรู้ว่า "ในภาพมีอะไร"</label>
+          <p class="muted" style="margin:0">รูปจะถูกย่อแล้วส่งไปที่ Google (generativelanguage.googleapis.com) ต้องต่ออินเทอร์เน็ตและมี API Key — ขอฟรีได้ที่ aistudio.google.com/apikey (free tier Google อาจนำข้อมูลไปปรับปรุงผลิตภัณฑ์ และมีเพดานคำขอต่อนาที/วัน ถ้า AI ล้มเหลวหรือติดเพดานจะใช้การวิเคราะห์ในเครื่องแทนอัตโนมัติ)</p>
           <div>
             <div class="muted">API Key <span v-if="st.hasAiKey" class="chip ok">บันทึกไว้แล้ว</span></div>
-            <input type="password" v-model="key" :placeholder="st.hasAiKey ? '(เว้นว่างเพื่อใช้ key เดิม)' : 'sk-ant-...'" autocomplete="off" />
+            <input type="password" v-model="key" :placeholder="st.hasAiKey ? '(เว้นว่างเพื่อใช้ key เดิม)' : 'AIza...'" autocomplete="off" />
           </div>
           <div>
             <div class="muted">Model</div>
@@ -47,7 +47,7 @@ const version = useDataVersion()
 const { error, ok } = useToasts()
 const enabled = ref(st.value.aiEnabled)
 const key = ref('')
-const model = ref(st.value.aiModel || 'claude-haiku-5-5')
+const model = ref(st.value.aiModel || 'gemini-3.1-flash-lite')
 const busy = ref(false)
 
 async function save() {

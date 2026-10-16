@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeJPEG(t *testing.T, path string, w, h int, c color.Color, topColor color.Color) {
@@ -355,16 +356,22 @@ func TestOrientRotates(t *testing.T) {
 }
 
 func TestAIAnalyzerWithFakeServer(t *testing.T) {
-	var gotKey, gotModel string
+	var gotKey, gotPath string
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotKey = r.Header.Get("x-api-key")
+		gotKey = r.Header.Get("x-goog-api-key")
+		gotPath = r.URL.Path
 		json.NewDecoder(r.Body).Decode(&gotBody)
-		gotModel, _ = gotBody["model"].(string)
-		if r.URL.Path != "/v1/messages" {
-			t.Errorf("path %s", r.URL.Path)
-		}
-		fmt.Fprint(w, `{"content":[{"type":"text","text":"`+"```json\\n"+`{\"description\":\"แมวส้มนอนบนโซฟา\",\"tags\":[\"แมว\",\"#สัตว์เลี้ยง\",\"แมว\"]}`+"\\n```"+`"}]}`)
+		// Gemini อาจห่อ JSON ด้วย ```json ก็ได้ — parseAIJSON ต้องรับได้
+		answer := "```json\n" + `{"description":"แมวส้มนอนบนโซฟา","tags":["แมว","#สัตว์เลี้ยง","แมว"]}` + "\n```"
+		resp := map[string]any{"candidates": []any{map[string]any{
+			"content": map[string]any{"parts": []any{
+				map[string]any{"text": "(thinking...)", "thought": true},
+				map[string]any{"text": answer},
+			}},
+			"finishReason": "STOP",
+		}}}
+		json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -376,19 +383,19 @@ func TestAIAnalyzerWithFakeServer(t *testing.T) {
 	if err := svc.SaveAISettings(AISettingsInput{Enabled: true}); err == nil {
 		t.Fatal("เปิด AI โดยไม่มี key ต้อง error")
 	}
-	if err := svc.SaveAISettings(AISettingsInput{Enabled: true, Key: "sk-test", Model: "m-1"}); err != nil {
+	if err := svc.SaveAISettings(AISettingsInput{Enabled: true, Key: "AIza-test", Model: "m-1"}); err != nil {
 		t.Fatal(err)
 	}
 	rep, err := svc.Move(nil, true, "move")
 	if err != nil || rep.AIUsed != 1 {
 		t.Fatalf("%+v %v", rep, err)
 	}
-	if gotKey != "sk-test" || gotModel != "m-1" {
-		t.Fatal(gotKey, gotModel)
+	if gotKey != "AIza-test" || gotPath != "/v1beta/models/m-1:generateContent" {
+		t.Fatal(gotKey, gotPath)
 	}
-	msgs := gotBody["messages"].([]any)
-	content := msgs[0].(map[string]any)["content"].([]any)
-	if content[0].(map[string]any)["type"] != "image" {
+	contents := gotBody["contents"].([]any)
+	parts := contents[0].(map[string]any)["parts"].([]any)
+	if _, ok := parts[0].(map[string]any)["inlineData"]; !ok {
 		t.Fatal("ต้องส่งรูปให้ AI")
 	}
 	db, _ := svc.ListDB("")
@@ -403,20 +410,60 @@ func TestAIAnalyzerWithFakeServer(t *testing.T) {
 		t.Fatalf("tags %v", names)
 	}
 
-	// AI ล้ม (401) → fallback local และมี note
+	// AI ล้ม (400 key ผิด) → fallback local และมี note
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(401)
-		fmt.Fprint(w, `{"error":{"message":"invalid x-api-key"}}`)
+		w.WriteHeader(400)
+		fmt.Fprint(w, `{"error":{"message":"API key not valid"}}`)
 	}))
 	defer bad.Close()
 	svc.AIBaseURL = bad.URL
 	rr, err := svc.Reanalyze(nil, true)
-	if err != nil || rr.Done != 1 || rr.AIUsed != 0 || !strings.Contains(rr.Note, "401") {
+	if err != nil || rr.Done != 1 || rr.AIUsed != 0 || !strings.Contains(rr.Note, "400") {
 		t.Fatalf("%+v %v", rr, err)
 	}
 	db, _ = svc.ListDB("")
 	if db[0].Analyzer != "local" {
 		t.Fatal("ต้อง fallback เป็น local")
+	}
+}
+
+func TestAIRetriesOnRateLimit(t *testing.T) {
+	oldDelay := aiRetryDelay
+	aiRetryDelay = time.Millisecond
+	defer func() { aiRetryDelay = oldDelay }()
+
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls < 3 {
+			w.WriteHeader(429)
+			fmt.Fprint(w, `{"error":{"message":"quota"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"{\"description\":\"ทะเล\",\"tags\":[\"ทะเล\"]}"}]}}]}`)
+	}))
+	defer srv.Close()
+
+	_, src, _ := setup(t)
+	img := filepath.Join(src, "sea.jpg")
+	writeJPEG(t, img, 64, 64, color.RGBA{20, 80, 200, 255}, nil)
+	res, err := AnalyzeAI(AIConfig{APIKey: "k", BaseURL: srv.URL}, img)
+	if err != nil || calls != 3 || res.Description != "ทะเล" {
+		t.Fatalf("calls=%d res=%+v err=%v", calls, res, err)
+	}
+}
+
+func TestNormalizeAIModel(t *testing.T) {
+	cases := map[string]string{
+		"":                        DefaultAIModel,
+		"claude-haiku-5-5":        DefaultAIModel, // ชื่อโมเดลเก่าจากเวอร์ชันก่อน
+		"models/gemini-x":         "gemini-x",
+		" gemini-3.5-flash-lite ": "gemini-3.5-flash-lite",
+	}
+	for in, want := range cases {
+		if got := NormalizeAIModel(in); got != want {
+			t.Errorf("NormalizeAIModel(%q)=%q want %q", in, got, want)
+		}
 	}
 }
 

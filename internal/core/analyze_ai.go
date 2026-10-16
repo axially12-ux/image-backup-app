@@ -14,13 +14,26 @@ import (
 )
 
 // DefaultAIModel คือโมเดลเริ่มต้นสำหรับ Vision AI (เปลี่ยนได้ในหน้าตั้งค่า)
-const DefaultAIModel = "claude-haiku-5-5"
+// gemini-3.1-flash-lite เป็นรุ่น stable ที่มี free tier (รุ่น 2.5 ถูกปิดบริการแล้ว)
+const DefaultAIModel = "gemini-3.1-flash-lite"
 
-// AIConfig คือค่าที่ใช้เรียก Anthropic Messages API
+// defaultGeminiBaseURL คือ endpoint ของ Gemini API
+const defaultGeminiBaseURL = "https://generativelanguage.googleapis.com"
+
+// AIConfig คือค่าที่ใช้เรียก Gemini generateContent API
 type AIConfig struct {
 	APIKey  string
 	Model   string
-	BaseURL string // ค่าว่าง = https://api.anthropic.com (ใช้ทดสอบ)
+	BaseURL string // ค่าว่าง = https://generativelanguage.googleapis.com (ใช้ทดสอบ)
+}
+
+// NormalizeAIModel กันกรณีในฐานข้อมูลยังเก็บชื่อโมเดลเก่า (เช่น claude-...) ไว้
+func NormalizeAIModel(m string) string {
+	m = strings.TrimSpace(m)
+	if m == "" || strings.HasPrefix(strings.ToLower(m), "claude") {
+		return DefaultAIModel
+	}
+	return strings.TrimPrefix(m, "models/")
 }
 
 // AIResult คือผลที่ AI ส่งกลับ
@@ -29,21 +42,25 @@ type AIResult struct {
 	Tags        []string `json:"tags"`
 }
 
+// จำนวนครั้งที่ลองเรียก API เมื่อติดเพดาน (429/503) และเวลารอพื้นฐาน (ปรับได้ตอนทดสอบ)
+var (
+	aiMaxAttempts = 3
+	aiRetryDelay  = 4 * time.Second
+)
+
 const aiPrompt = `วิเคราะห์ภาพนี้แล้วตอบเป็น JSON เท่านั้น (ห้ามมีข้อความอื่น):
 {"description": "...", "tags": ["...", "..."]}
 - description: คำอธิบายภาพเป็นภาษาไทย 1-2 ประโยค บอกว่าในภาพมีอะไร ทำอะไร อยู่ที่ไหน บรรยากาศเป็นอย่างไร
 - tags: 5-10 คำสั้น ๆ (คำนาม/หัวข้อ เช่น ชนิดวัตถุ สถานที่ กิจกรรม สี อารมณ์) เป็นภาษาไทย ไม่ต้องมีเครื่องหมาย # และห้ามซ้ำกัน`
 
-// AnalyzeAI ส่งภาพ (ย่อให้ไม่เกิน 1568px) ไปให้ Claude วิเคราะห์ ได้คำอธิบายและ tag
+// AnalyzeAI ส่งภาพ (ย่อให้ไม่เกิน 1568px) ไปให้ Gemini วิเคราะห์ ได้คำอธิบายและ tag
 func AnalyzeAI(cfg AIConfig, path string) (AIResult, error) {
 	if cfg.APIKey == "" {
 		return AIResult{}, errors.New("ไม่มี API Key")
 	}
-	if cfg.Model == "" {
-		cfg.Model = DefaultAIModel
-	}
+	cfg.Model = NormalizeAIModel(cfg.Model)
 	if cfg.BaseURL == "" {
-		cfg.BaseURL = "https://api.anthropic.com"
+		cfg.BaseURL = defaultGeminiBaseURL
 	}
 	mediaType, b64, err := prepareImageForAI(path)
 	if err != nil {
@@ -51,32 +68,46 @@ func AnalyzeAI(cfg AIConfig, path string) (AIResult, error) {
 	}
 
 	body := map[string]any{
-		"model":      cfg.Model,
-		"max_tokens": 600,
-		"messages": []any{map[string]any{
+		"contents": []any{map[string]any{
 			"role": "user",
-			"content": []any{
-				map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": mediaType, "data": b64}},
-				map[string]any{"type": "text", "text": aiPrompt},
+			"parts": []any{
+				map[string]any{"inlineData": map[string]any{"mimeType": mediaType, "data": b64}},
+				map[string]any{"text": aiPrompt},
 			},
 		}},
+		"generationConfig": map[string]any{
+			// เผื่อ token สำหรับโมเดลที่มี thinking เพื่อไม่ให้คำตอบถูกตัดกลางคัน
+			"maxOutputTokens":  2048,
+			"responseMimeType": "application/json",
+		},
 	}
 	payload, _ := json.Marshal(body)
-	req, err := http.NewRequest("POST", strings.TrimRight(cfg.BaseURL, "/")+"/v1/messages", bytes.NewReader(payload))
-	if err != nil {
-		return AIResult{}, err
-	}
-	req.Header.Set("content-type", "application/json")
-	req.Header.Set("x-api-key", cfg.APIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
+	url := strings.TrimRight(cfg.BaseURL, "/") + "/v1beta/models/" + cfg.Model + ":generateContent"
 
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
-	if err != nil {
-		return AIResult{}, fmt.Errorf("เชื่อมต่อ API ไม่ได้: %w", err)
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if resp.StatusCode != http.StatusOK {
+	var data []byte
+	for attempt := 1; ; attempt++ {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
+		if err != nil {
+			return AIResult{}, err
+		}
+		req.Header.Set("content-type", "application/json")
+		req.Header.Set("x-goog-api-key", cfg.APIKey)
+
+		resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+		if err != nil {
+			return AIResult{}, fmt.Errorf("เชื่อมต่อ API ไม่ได้: %w", err)
+		}
+		data, _ = io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+		// free tier มีเพดานคำขอต่อนาที: 429/503 ลองใหม่สั้น ๆ ก่อนยอมแพ้ (แล้ว fallback เป็นวิเคราะห์ในเครื่อง)
+		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) && attempt < aiMaxAttempts {
+			time.Sleep(time.Duration(attempt) * aiRetryDelay)
+			continue
+		}
 		var e struct {
 			Error struct{ Message string } `json:"error"`
 		}
@@ -87,19 +118,34 @@ func AnalyzeAI(cfg AIConfig, path string) (AIResult, error) {
 		}
 		return AIResult{}, fmt.Errorf("API ตอบกลับ %d: %s", resp.StatusCode, truncate(msg, 200))
 	}
+
 	var out struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text    string `json:"text"`
+					Thought bool   `json:"thought"`
+				} `json:"parts"`
+			} `json:"content"`
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+		PromptFeedback struct {
+			BlockReason string `json:"blockReason"`
+		} `json:"promptFeedback"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		return AIResult{}, fmt.Errorf("อ่านคำตอบ API ไม่ได้: %w", err)
 	}
+	if len(out.Candidates) == 0 {
+		if out.PromptFeedback.BlockReason != "" {
+			return AIResult{}, fmt.Errorf("Gemini ปฏิเสธรูปนี้ (%s)", out.PromptFeedback.BlockReason)
+		}
+		return AIResult{}, errors.New("Gemini ไม่ได้ส่งคำตอบกลับมา")
+	}
 	var text string
-	for _, c := range out.Content {
-		if c.Type == "text" {
-			text += c.Text
+	for _, p := range out.Candidates[0].Content.Parts {
+		if !p.Thought {
+			text += p.Text
 		}
 	}
 	return parseAIJSON(text)
