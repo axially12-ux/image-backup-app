@@ -39,7 +39,7 @@ type Service struct {
 
 	DBPath         string
 	ThumbDir       string
-	AIBaseURL      string // ใช้ทดสอบ; ค่าว่าง = https://api.anthropic.com
+	AIBaseURL      string // ใช้ทดสอบ; ค่าว่าง = https://generativelanguage.googleapis.com
 	AnalyzeWorkers int
 }
 
@@ -55,9 +55,7 @@ func New(store Store) (*Service, error) {
 		s.source = st.Source
 		s.dest = st.Dest
 	}
-	if s.settings.AIModel == "" {
-		s.settings.AIModel = DefaultAIModel
-	}
+	s.settings.AIModel = NormalizeAIModel(s.settings.AIModel)
 	return s, nil
 }
 
@@ -131,7 +129,7 @@ func (s *Service) SaveAISettings(in AISettingsInput) error {
 		s.settings.AIKey = strings.TrimSpace(in.Key)
 	}
 	if strings.TrimSpace(in.Model) != "" {
-		s.settings.AIModel = strings.TrimSpace(in.Model)
+		s.settings.AIModel = NormalizeAIModel(in.Model)
 	}
 	if s.settings.AIEnabled && s.settings.AIKey == "" {
 		s.settings.AIEnabled = false
