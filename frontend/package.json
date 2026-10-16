@@ -1,0 +1,17 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/ensure-dist.mjs",
+    "dev": "nuxt dev --port 3000",
+    "build": "nuxt generate && node scripts/sync-dist.mjs",
+    "generate": "nuxt generate && node scripts/sync-dist.mjs",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "nuxt": "^3.17.0",
+    "vue": "^3.5.0"
+  }
+}
