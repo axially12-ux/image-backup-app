@@ -4,7 +4,7 @@
       <thead>
         <tr>
           <th style="width:30px"><input type="checkbox" :checked="files.length > 0 && selected.size === files.length" @change="toggleAll" /></th>
-          <th>ชื่อไฟล์ลลลลลลลลลลลลลลลลลลลลลลลลลลลลลลลลล</th><th>ขนาด</th><th>แก้ไขล่าสุด</th>
+          <th>ชื่อไฟล์</th><th>ขนาด</th><th>แก้ไขล่าสุด</th>
         </tr>
       </thead>
       <tbody>
