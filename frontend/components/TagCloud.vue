@@ -8,7 +8,7 @@
         {{ t.name }}<sup class="muted"> {{ t.count }}</sup>
       </button>
     </div>
-    <div v-else class="muted">ยังไม่มี Tag — Backup รูปก่อน แล้วระบบจะวิเคราะห์และสร้าง Tag ให้</div>
+    <div v-else class="muted">ยังไม่มี Tag Backup รูปก่อน แล้วระบบจะวิเคราะห์และสร้าง Tag ให้</div>
   </div>
 </template>
 
