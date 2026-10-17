@@ -24,7 +24,7 @@
       <div class="row">
         <h3 class="grow" style="margin:0">2) เลือกรูปที่จะ Backup</h3>
         <label class="inline"><input type="radio" value="move" v-model="mode" /> ย้าย (move — ลบจากต้นทาง)</label>
-        <label class="inline"><input type="radio" value="copy" v-model="mode" /> คัดลอก (copy)</label>
+        <!-- <label class="inline"><input type="radio" value="copy" v-model="mode" /> คัดลอก (copy)</label> -->
       </div>
       <div class="row">
         <button class="btn small" @click="loadSource" :disabled="!st.source">โหลดรายการใหม่</button>
