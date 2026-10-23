@@ -38,12 +38,12 @@ export function PickSource() {
   return window['go']['main']['App']['PickSource']();
 }
 
-export function Reanalyze(arg1, arg2) {
-  return window['go']['main']['App']['Reanalyze'](arg1, arg2);
-}
-
 export function ReanalyzePending() {
   return window['go']['main']['App']['ReanalyzePending']();
+}
+
+export function Reanalyze(arg1, arg2) {
+  return window['go']['main']['App']['Reanalyze'](arg1, arg2);
 }
 
 export function SaveAISettings(arg1) {
