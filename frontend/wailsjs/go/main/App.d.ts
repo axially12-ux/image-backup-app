@@ -22,6 +22,8 @@ export function PickSource():Promise<string>;
 
 export function Reanalyze(arg1:Array<number>,arg2:boolean):Promise<core.AnalyzeReport>;
 
+export function ReanalyzePending():Promise<core.AnalyzeReport>;
+
 export function SaveAISettings(arg1:core.AISettingsInput):Promise<void>;
 
 export function Search(arg1:string,arg2:string):Promise<Array<core.Image>>;

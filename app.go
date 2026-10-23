@@ -202,6 +202,14 @@ func (a *App) TagCloud() ([]core.TagCount, error) {
 	return a.svc.TagCloud()
 }
 
+// ReanalyzePending วิเคราะห์เฉพาะรูปที่ AI ยังไม่ได้ทำ (เช่น รอบก่อนติด 503/หมดเวลา)
+func (a *App) ReanalyzePending() (core.AnalyzeReport, error) {
+	if err := a.ready(); err != nil {
+		return core.AnalyzeReport{}, err
+	}
+	return a.svc.ReanalyzePending()
+}
+
 func (a *App) Reanalyze(ids []uint, all bool) (core.AnalyzeReport, error) {
 	if err := a.ready(); err != nil {
 		return core.AnalyzeReport{}, err

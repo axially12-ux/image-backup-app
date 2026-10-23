@@ -25,6 +25,7 @@ export namespace core {
 	    note: string;
 	    ms: number;
 	    elapsed: string;
+	    detail: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AnalyzeReport(source);
@@ -38,6 +39,7 @@ export namespace core {
 	        this.note = source["note"];
 	        this.ms = source["ms"];
 	        this.elapsed = source["elapsed"];
+	        this.detail = source["detail"];
 	    }
 	}
 	export class CheckReport {
@@ -209,6 +211,7 @@ export namespace core {
 	    analyzed: number;
 	    aiUsed: number;
 	    note: string;
+	    detail: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new MoveReport(source);
@@ -228,6 +231,7 @@ export namespace core {
 	        this.analyzed = source["analyzed"];
 	        this.aiUsed = source["aiUsed"];
 	        this.note = source["note"];
+	        this.detail = source["detail"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

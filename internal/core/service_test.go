@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -363,7 +365,7 @@ func TestAIAnalyzerWithFakeServer(t *testing.T) {
 		gotPath = r.URL.Path
 		json.NewDecoder(r.Body).Decode(&gotBody)
 		// Gemini อาจห่อ JSON ด้วย ```json ก็ได้ — parseAIJSON ต้องรับได้
-		answer := "```json\n" + `{"description":"แมวส้มนอนบนโซฟา","tags":["แมว","#สัตว์เลี้ยง","แมว"]}` + "\n```"
+		answer := "```json\n" + `{"results":[{"i":0,"description":"แมวส้มนอนบนโซฟา","categories":["สัตว์","สัตว์","แมวส้ม","ในอาคาร"]}]}` + "\n```"
 		resp := map[string]any{"candidates": []any{map[string]any{
 			"content": map[string]any{"parts": []any{
 				map[string]any{"text": "(thinking...)", "thought": true},
@@ -395,7 +397,13 @@ func TestAIAnalyzerWithFakeServer(t *testing.T) {
 	}
 	contents := gotBody["contents"].([]any)
 	parts := contents[0].(map[string]any)["parts"].([]any)
-	if _, ok := parts[0].(map[string]any)["inlineData"]; !ok {
+	hasImg := false
+	for _, p := range parts {
+		if _, ok := p.(map[string]any)["inlineData"]; ok {
+			hasImg = true
+		}
+	}
+	if !hasImg {
 		t.Fatal("ต้องส่งรูปให้ AI")
 	}
 	db, _ := svc.ListDB("")
@@ -406,7 +414,8 @@ func TestAIAnalyzerWithFakeServer(t *testing.T) {
 	for _, tg := range db[0].Tags {
 		names[tg.Name]++
 	}
-	if names["แมว"] != 1 || names["สัตว์เลี้ยง"] != 1 || names["backup"] != 1 {
+	// แท็กต้องเป็นหมวดหมู่ในรายการเท่านั้น (คำนอกรายการอย่าง "แมวส้ม" ถูกทิ้ง) + backup
+	if names["สัตว์"] != 1 || names["ในอาคาร"] != 1 || names["backup"] != 1 || len(names) != 3 {
 		t.Fatalf("tags %v", names)
 	}
 
@@ -440,7 +449,7 @@ func TestAIRetriesOnRateLimit(t *testing.T) {
 			fmt.Fprint(w, `{"error":{"message":"quota"}}`)
 			return
 		}
-		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"{\"description\":\"ทะเล\",\"tags\":[\"ทะเล\"]}"}]}}]}`)
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"{\"results\":[{\"i\":0,\"description\":\"ทะเล\",\"categories\":[\"ทะเล\"]}]}"}]}}]}`)
 	}))
 	defer srv.Close()
 
@@ -509,5 +518,309 @@ func TestFormatElapsed(t *testing.T) {
 	}
 	if got := FormatElapsed(2_410_000_000); got != "2.41 s" {
 		t.Fatal(got)
+	}
+}
+
+
+func TestNormalizeCategories(t *testing.T) {
+	got := NormalizeCategories([]string{"ทะเล", "ทะเล", "แมวส้ม", "ผู้หญิง", "ภูเขา", "ธรรมชาติ", "อาหาร"})
+	if strings.Join(got, ",") != "ทะเล,ผู้หญิง,ภูเขา,ธรรมชาติ,อาหาร" { // ไม่ซ้ำ, ไม่เกิน 5, ตัดคำนอกรายการ
+		t.Fatal(got)
+	}
+	seen := map[string]bool{}
+	for _, c := range AICategories { // รายการหมวดต้องไม่ซ้ำกัน (ซ้ำจะทำให้ enum/ผลคลาดเคลื่อน)
+		if seen[NormalizeTag(c)] {
+			t.Fatalf("หมวดซ้ำ: %s", c)
+		}
+		seen[NormalizeTag(c)] = true
+	}
+	if got := NormalizeCategories([]string{"อะไรก็ไม่รู้"}); len(got) != 1 || got[0] != "อื่นๆ" {
+		t.Fatal(got)
+	}
+}
+
+// fakeBatchServer ตอบทุกรูปในคำขอเป็นหมวด "ทะเล" และนับจำนวน request / รูปต่อ request
+func fakeBatchServer(t *testing.T, calls *int32, status int) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" { // นับเฉพาะ generateContent (ไม่นับ ListModels)
+			atomic.AddInt32(calls, 1)
+		}
+		if status != 200 {
+			w.WriteHeader(status)
+			fmt.Fprint(w, `{"error":{"message":"Quota exceeded for metric ... PerDay"}}`)
+			return
+		}
+		var body struct {
+			Contents []struct {
+				Parts []map[string]any `json:"parts"`
+			} `json:"contents"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		n := 0
+		for _, p := range body.Contents[0].Parts {
+			if _, ok := p["inlineData"]; ok {
+				n++
+			}
+		}
+		rows := []string{}
+		for i := 0; i < n; i++ {
+			rows = append(rows, fmt.Sprintf(`{"i":%d,"description":"ภาพทะเล %d","categories":["ทะเล","ท้องฟ้า"]}`, i, i))
+		}
+		text, _ := json.Marshal(`{"results":[` + strings.Join(rows, ",") + `]}`)
+		fmt.Fprintf(w, `{"candidates":[{"content":{"parts":[{"text":%s}]}}]}`, text)
+	}))
+}
+
+func TestAIBatchesManyImagesPerRequest(t *testing.T) {
+	var calls int32
+	srv := fakeBatchServer(t, &calls, 200)
+	defer srv.Close()
+
+	svc, src, dst := setup(t)
+	for i := 0; i < 20; i++ {
+		writeJPEG(t, filepath.Join(src, fmt.Sprintf("p%02d.jpg", i)), 48+i, 48, color.RGBA{20, 80, 200, 255}, nil)
+	}
+	svc.SetSource(src)
+	svc.SetDest(dst)
+	svc.AIBaseURL = srv.URL
+	svc.AIBatchSize = 8
+	if err := svc.SaveAISettings(AISettingsInput{Enabled: true, Key: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := svc.Move(nil, true, "move")
+	if err != nil || rep.Analyzed != 20 || rep.AIUsed != 20 {
+		t.Fatalf("%+v %v", rep, err)
+	}
+	if calls != 3 { // 20 รูป ÷ 8 = 3 request (แทนที่จะเป็น 20)
+		t.Fatalf("ควรใช้ 3 request ได้ %d", calls)
+	}
+	db, _ := svc.ListDB("")
+	for _, im := range db {
+		if im.Width == 0 || len(im.Tags) != 3 { // backup + ทะเล + ท้องฟ้า
+			t.Fatalf("%+v", im)
+		}
+	}
+}
+
+func TestAIQuotaStopsEarlyAndFallsBackLocal(t *testing.T) {
+	var calls int32
+	srv := fakeBatchServer(t, &calls, 429)
+	defer srv.Close()
+	old := aiRetryDelay
+	aiRetryDelay = time.Millisecond
+	defer func() { aiRetryDelay = old }()
+
+	svc, src, dst := setup(t)
+	for i := 0; i < 12; i++ {
+		writeJPEG(t, filepath.Join(src, fmt.Sprintf("p%02d.jpg", i)), 48+i, 48, color.RGBA{20, 80, 200, 255}, nil)
+	}
+	svc.SetSource(src)
+	svc.SetDest(dst)
+	svc.AIBaseURL = srv.URL
+	svc.AIBatchSize = 4
+	svc.AIConcurrency = 1
+	svc.SaveAISettings(AISettingsInput{Enabled: true, Key: "k"})
+	rep, err := svc.Move(nil, true, "move")
+	if err != nil || rep.Analyzed != 12 || rep.AIUsed != 0 || !strings.Contains(rep.Note, "โควตา") {
+		t.Fatalf("%+v %v", rep, err)
+	}
+	if calls != 1 { // โควตารายวันหมด → ยิงครั้งเดียวแล้วหยุด ไม่ลองซ้ำ/ไม่ยิงชุดที่เหลือ
+		t.Fatalf("ควรยิงแค่ 1 ครั้ง ได้ %d", calls)
+	}
+}
+
+// โมเดลที่ไม่รับ thinkingConfig (400) → ต้องลองใหม่โดยไม่ส่ง และไม่ทำให้การวิเคราะห์ล้มเหลว
+func TestAIThinkingConfigFallback(t *testing.T) {
+	aiThinkingOff.Store(true)
+	defer aiThinkingOff.Store(true)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if _, has := body["generationConfig"].(map[string]any)["thinkingConfig"]; has {
+			w.WriteHeader(400)
+			fmt.Fprint(w, `{"error":{"message":"Unknown name \"thinkingConfig\": Cannot find field."}}`)
+			return
+		}
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"{\"results\":[{\"i\":0,\"description\":\"ทะเล\",\"categories\":[\"ทะเล\"]}]}"}]}}]}`)
+	}))
+	defer srv.Close()
+	_, src, _ := setup(t)
+	img := filepath.Join(src, "sea.jpg")
+	writeJPEG(t, img, 64, 64, color.RGBA{20, 80, 200, 255}, nil)
+	res, err := AnalyzeAI(AIConfig{APIKey: "k", BaseURL: srv.URL}, img)
+	if err != nil || calls != 2 || res.Description != "ทะเล" || aiThinkingOff.Load() {
+		t.Fatalf("calls=%d res=%+v err=%v", calls, res, err)
+	}
+}
+
+// 503 (เซิร์ฟเวอร์ยุ่ง) ที่หายเอง → ต้องลองใหม่แล้วสำเร็จ ไม่ fallback; และ Gate ต้องลดแล้วฟื้นกลับ
+func TestAIBusy503RecoversAndGateAdapts429(t *testing.T) {
+	old := aiRetryDelay
+	aiRetryDelay = time.Millisecond
+	defer func() { aiRetryDelay = old }()
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) <= 2 {
+			w.WriteHeader(503)
+			fmt.Fprint(w, `{"error":{"message":"This model is currently experiencing high demand."}}`)
+			return
+		}
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"{\"results\":[{\"i\":0,\"description\":\"ทะเล\",\"categories\":[\"ทะเล\"]}]}"}]}}]}`)
+	}))
+	defer srv.Close()
+	_, src, _ := setup(t)
+	img := filepath.Join(src, "sea.jpg")
+	writeJPEG(t, img, 64, 64, color.RGBA{20, 80, 200, 255}, nil)
+	g := NewAIGate(6)
+	res, err := AnalyzeAI(AIConfig{APIKey: "k", BaseURL: srv.URL, Gate: g}, img)
+	if err != nil || calls != 3 || res.Description != "ทะเล" {
+		t.Fatalf("calls=%d res=%+v err=%v", calls, res, err)
+	}
+	if g.Cap() != 6 { // 503 ไม่ลดจำนวนที่ยิงพร้อมกัน (ลดเฉพาะ 429)
+		t.Fatalf("cap=%d", g.Cap())
+	}
+	g.Acquire()
+	g.Release(true, false) // 429 → ลดครึ่ง
+	if g.Cap() != 3 {
+		t.Fatalf("cap=%d", g.Cap())
+	}
+
+	// 503 ตลอด → ErrAIBusy (ไม่ใช่ ErrAIQuota)
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+		fmt.Fprint(w, `{"error":{"message":"high demand"}}`)
+	}))
+	defer bad.Close()
+	_, err = AnalyzeAI(AIConfig{APIKey: "k", BaseURL: bad.URL}, img)
+	if !errors.Is(err, ErrAIBusy) || errors.Is(err, ErrAIQuota) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+// เกินงบเวลา → ไม่ยิง AI เลย ที่เหลือใช้แบบในเครื่อง และงานเสร็จครบ
+func TestAIBudgetExhaustedFallsBackLocal(t *testing.T) {
+	var calls int32
+	srv := fakeBatchServer(t, &calls, 200)
+	defer srv.Close()
+	svc, src, dst := setup(t)
+	for i := 0; i < 6; i++ {
+		writeJPEG(t, filepath.Join(src, fmt.Sprintf("p%02d.jpg", i)), 48+i, 48, color.RGBA{20, 80, 200, 255}, nil)
+	}
+	svc.SetSource(src)
+	svc.SetDest(dst)
+	svc.AIBaseURL = srv.URL
+	svc.AIBudget = time.Nanosecond
+	svc.SaveAISettings(AISettingsInput{Enabled: true, Key: "k"})
+	rep, err := svc.Move(nil, true, "move")
+	if err != nil || rep.Analyzed != 6 || rep.AIUsed != 0 || calls != 0 || !strings.Contains(rep.Note, "เวลา") {
+		t.Fatalf("%+v calls=%d %v", rep, calls, err)
+	}
+}
+
+// 503 ตลอดและงบเวลาสั้น → ไม่รอ backoff เกินงบ (คืน ErrAIBudget ทันที)
+func TestAIBusyRespectsDeadline(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+		fmt.Fprint(w, `{"error":{"message":"high demand"}}`)
+	}))
+	defer bad.Close()
+	_, src, _ := setup(t)
+	img := filepath.Join(src, "a.jpg")
+	writeJPEG(t, img, 64, 64, color.RGBA{20, 80, 200, 255}, nil)
+	start := time.Now()
+	_, err := AnalyzeAI(AIConfig{APIKey: "k", BaseURL: bad.URL, Deadline: time.Now().Add(500 * time.Millisecond)}, img)
+	if !errors.Is(err, ErrAIBudget) || time.Since(start) > 2*time.Second {
+		t.Fatalf("err=%v took=%v", err, time.Since(start))
+	}
+}
+
+// โมเดลหลักติด 503 ตลอด → สลับไปโมเดลสำรองจาก ListModels อัตโนมัติ แล้วได้ผล AI ครบ
+func TestAIFallsBackToAnotherModelOn503(t *testing.T) {
+	old := aiRetryDelay
+	aiRetryDelay = time.Millisecond
+	defer func() { aiRetryDelay = old }()
+	var primaryCalls, backupCalls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1beta/models":
+			fmt.Fprint(w, `{"models":[
+			 {"name":"models/gemini-x-flash","supportedGenerationMethods":["generateContent"]},
+			 {"name":"models/gemini-x-flash-lite-backup","supportedGenerationMethods":["generateContent"]},
+			 {"name":"models/gemini-x-flash-image","supportedGenerationMethods":["generateContent"]},
+			 {"name":"models/text-embedding","supportedGenerationMethods":["embedContent"]}]}`)
+		case strings.Contains(r.URL.Path, "primary-lite"):
+			atomic.AddInt32(&primaryCalls, 1)
+			w.WriteHeader(503)
+			fmt.Fprint(w, `{"error":{"message":"high demand"}}`)
+		default:
+			atomic.AddInt32(&backupCalls, 1)
+			var body struct {
+				Contents []struct {
+					Parts []map[string]any `json:"parts"`
+				} `json:"contents"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			n := 0
+			for _, p := range body.Contents[0].Parts {
+				if _, ok := p["inlineData"]; ok {
+					n++
+				}
+			}
+			rows := []string{}
+			for i := 0; i < n; i++ {
+				rows = append(rows, fmt.Sprintf(`{"i":%d,"description":"ทะเล","categories":["ทะเล"]}`, i))
+			}
+			text, _ := json.Marshal(`{"results":[` + strings.Join(rows, ",") + `]}`)
+			fmt.Fprintf(w, `{"candidates":[{"content":{"parts":[{"text":%s}]}}]}`, text)
+		}
+	}))
+	defer srv.Close()
+
+	svc, src, dst := setup(t)
+	for i := 0; i < 6; i++ {
+		writeJPEG(t, filepath.Join(src, fmt.Sprintf("p%02d.jpg", i)), 48+i, 48, color.RGBA{20, 80, 200, 255}, nil)
+	}
+	svc.SetSource(src)
+	svc.SetDest(dst)
+	svc.AIBaseURL = srv.URL
+	svc.AIBatchSize = 2
+	svc.SaveAISettings(AISettingsInput{Enabled: true, Key: "k", Model: "primary-lite"})
+	rep, err := svc.Move(nil, true, "move")
+	if err != nil || rep.Analyzed != 6 || rep.AIUsed != 6 {
+		t.Fatalf("%+v %v", rep, err)
+	}
+	if !strings.Contains(rep.Detail, "gemini-x-flash-lite-backup") || strings.Contains(rep.Detail, "image") {
+		t.Fatalf("detail=%q", rep.Detail)
+	}
+	if primaryCalls == 0 || backupCalls == 0 {
+		t.Fatal(primaryCalls, backupCalls)
+	}
+}
+
+// ReanalyzePending ทำเฉพาะรูปที่ยังไม่ใช่ analyzer=ai และไม่ยิงซ้ำกับรูปที่ได้ผล AI แล้ว
+func TestReanalyzePendingOnlyNonAI(t *testing.T) {
+	var calls int32
+	srv := fakeBatchServer(t, &calls, 200)
+	defer srv.Close()
+	svc, src, dst := setup(t)
+	for i := 0; i < 5; i++ {
+		writeJPEG(t, filepath.Join(src, fmt.Sprintf("p%02d.jpg", i)), 48+i, 48, color.RGBA{20, 80, 200, 255}, nil)
+	}
+	svc.SetSource(src)
+	svc.SetDest(dst)
+	svc.AIBaseURL = srv.URL
+	if _, err := svc.Move(nil, true, "move"); err != nil { // AI ปิดอยู่ → ทุกรูปเป็น local
+		t.Fatal(err)
+	}
+	svc.SaveAISettings(AISettingsInput{Enabled: true, Key: "k"})
+	rep, err := svc.ReanalyzePending()
+	if err != nil || rep.Total != 5 || rep.AIUsed != 5 {
+		t.Fatalf("%+v %v", rep, err)
+	}
+	before := calls
+	if _, err := svc.ReanalyzePending(); err == nil || calls != before {
+		t.Fatalf("รอบสอง ต้องแจ้งว่าไม่มีอะไรต้องทำ และไม่ยิง API (err=%v calls=%d→%d)", err, before, calls)
 	}
 }
