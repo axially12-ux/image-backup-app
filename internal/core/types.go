@@ -99,6 +99,7 @@ type MoveReport struct {
 	Analyzed  int          `json:"analyzed"`
 	AIUsed    int          `json:"aiUsed"`
 	Note      string       `json:"note"`
+	Detail    string       `json:"detail"` // สรุปเวลาที่หมดไปกับ AI
 }
 
 // DeleteReport คือสรุปผลการลบ
@@ -125,6 +126,7 @@ type ProgressEvent struct {
 	Total  int    `json:"total"`
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	AI     int    `json:"ai"` // จำนวนรูปที่ได้ผลจาก AI สะสมถึงตอนนี้ (phase=analyze)
 }
 
 // Store คือชั้นฐานข้อมูล (GORM + SQLite ในงานจริง)

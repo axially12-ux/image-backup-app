@@ -24,7 +24,7 @@
       <div class="row">
         <h3 class="grow" style="margin:0">2) เลือกรูปที่จะ Backup</h3>
         <label class="inline"><input type="radio" value="move" v-model="mode" /> ย้าย (move — ลบจากต้นทาง)</label>
-        <label class="inline"><input type="radio" value="copy" v-model="mode" /> คัดลอก (copy)</label>
+        <!-- <label class="inline"><input type="radio" value="copy" v-model="mode" /> คัดลอก (copy)</label> -->
       </div>
       <div class="row">
         <button class="btn small" @click="loadSource" :disabled="!st.source">โหลดรายการใหม่</button>
@@ -66,6 +66,7 @@
         <span class="chip">⏱ เวลารวม {{ report.elapsed }}</span>
         <span class="chip muted">ย้าย {{ report.moveMs.toFixed(1) }} ms · วิเคราะห์ {{ report.analyzeMs.toFixed(1) }} ms</span>
       </div>
+      <div v-if="report.detail" class="chip muted" style="white-space:normal">⏱ {{ report.detail }}</div>
       <div v-if="report.note" class="chip warn" style="white-space:normal">{{ report.note }}</div>
       <div class="filelist">
         <table>
