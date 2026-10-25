@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -39,13 +40,16 @@ type Service struct {
 
 	DBPath         string
 	ThumbDir       string
-	AIBaseURL      string // ใช้ทดสอบ; ค่าว่าง = https://generativelanguage.googleapis.com
-	AnalyzeWorkers int
+	AIBaseURL      string        // ใช้ทดสอบ; ค่าว่าง = https://generativelanguage.googleapis.com
+	AnalyzeWorkers int           // worker ของการวิเคราะห์ในเครื่อง
+	AIBatchSize    int           // รูปต่อ 1 request ของ Vision AI (0 = DefaultAIBatchSize)
+	AIConcurrency  int           // จำนวน request AI ที่ยิงพร้อมกัน (0 = DefaultAIConcurrency)
+	AIBudget       time.Duration // เวลาสูงสุดที่ให้ AI (0 = DefaultAIBudget)
 }
 
 // New สร้าง Service และกู้ค่า source/dest ล่าสุดจาก DB (ถ้ามี)
 func New(store Store) (*Service, error) {
-	s := &Service{store: store, AnalyzeWorkers: 3}
+	s := &Service{store: store, AnalyzeWorkers: max(3, runtime.NumCPU())}
 	st, found, err := store.LoadSettings()
 	if err != nil {
 		return nil, err
@@ -322,7 +326,7 @@ func (s *Service) Move(names []string, all bool, mode string) (MoveReport, error
 	for _, p := range toAnalyze {
 		ids = append(ids, p.id)
 	}
-	rep.Analyzed, rep.AIUsed, rep.Note = s.analyzeIDs(ids)
+	rep.Analyzed, rep.AIUsed, rep.Note, rep.Detail = s.analyzeIDs(ids)
 	rep.AnalyzeMs = ms(time.Since(anaStart))
 
 	rep.TotalMs = ms(time.Since(totalStart))

@@ -66,6 +66,7 @@
         <span class="chip">⏱ เวลารวม {{ report.elapsed }}</span>
         <span class="chip muted">ย้าย {{ report.moveMs.toFixed(1) }} ms · วิเคราะห์ {{ report.analyzeMs.toFixed(1) }} ms</span>
       </div>
+      <div v-if="report.detail" class="chip muted" style="white-space:normal">⏱ {{ report.detail }}</div>
       <div v-if="report.note" class="chip warn" style="white-space:normal">{{ report.note }}</div>
       <div class="filelist">
         <table>

@@ -20,6 +20,8 @@ export function PickDest():Promise<string>;
 
 export function PickSource():Promise<string>;
 
+export function ReanalyzePending():Promise<core.AnalyzeReport>;
+
 export function Reanalyze(arg1:Array<number>,arg2:boolean):Promise<core.AnalyzeReport>;
 
 export function SaveAISettings(arg1:core.AISettingsInput):Promise<void>;

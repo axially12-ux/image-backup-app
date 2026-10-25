@@ -1,6 +1,7 @@
 package core
 
 import (
+	"image/color"
 	"bytes"
 	"fmt"
 	"image"
@@ -36,6 +37,9 @@ func scaleDown(src image.Image, maxDim int) image.Image {
 		nw, nh = maxDim, max(1, h*maxDim/w)
 	} else {
 		nh, nw = maxDim, max(1, w*maxDim/h)
+	}
+	if yc, ok := src.(*image.YCbCr); ok {
+		return scaleDownYCbCr(yc, nw, nh)
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
 	rx, ry := float64(w)/float64(nw), float64(h)/float64(nh)
@@ -193,4 +197,38 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+}
+
+// scaleDownYCbCr คือเส้นทางเร็วของ scaleDown สำหรับภาพ JPEG (image.YCbCr)
+// อ่านค่า Y/Cb/Cr ตรง ๆ แทน src.At() ซึ่งต้องสร้าง color.Color ทุกพิกเซล (ช้ากว่าหลายเท่า)
+// ใช้วิธีสุ่มตัวอย่างเป็นบล็อกแบบเดียวกับเส้นทางทั่วไป
+func scaleDownYCbCr(src *image.YCbCr, nw, nh int) *image.RGBA {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+	rx, ry := float64(w)/float64(nw), float64(h)/float64(nh)
+	for y := 0; y < nh; y++ {
+		y0 := int(float64(y) * ry)
+		y1 := max(y0+1, int(float64(y+1)*ry))
+		sy := max(1, (y1-y0)/3)
+		for x := 0; x < nw; x++ {
+			x0 := int(float64(x) * rx)
+			x1 := max(x0+1, int(float64(x+1)*rx))
+			sx := max(1, (x1-x0)/3)
+			var r, g, bl, n uint32
+			for yy := y0; yy < y1; yy += sy {
+				for xx := x0; xx < x1; xx += sx {
+					px, py := b.Min.X+xx, b.Min.Y+yy
+					cr, cg, cb := color.YCbCrToRGB(src.Y[src.YOffset(px, py)], src.Cb[src.COffset(px, py)], src.Cr[src.COffset(px, py)])
+					r += uint32(cr)
+					g += uint32(cg)
+					bl += uint32(cb)
+					n++
+				}
+			}
+			i := dst.PixOffset(x, y)
+			dst.Pix[i], dst.Pix[i+1], dst.Pix[i+2], dst.Pix[i+3] = uint8(r/n), uint8(g/n), uint8(bl/n), 255
+		}
+	}
+	return dst
 }

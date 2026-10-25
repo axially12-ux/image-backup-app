@@ -42,7 +42,7 @@ export async function refreshState() {
 
 // progress ระหว่าง Backup/วิเคราะห์ (Go ส่ง event ชื่อ "progress")
 export function useProgress() {
-  return useState('progress', () => ({ active: false, phase: '', index: 0, total: 0, name: '' }))
+  return useState('progress', () => ({ active: false, phase: '', index: 0, total: 0, name: '', ai: 0 }))
 }
 
 let listening = false
@@ -51,7 +51,7 @@ export function listenProgress() {
   listening = true
   const p = useProgress()
   EventsOn('progress', (ev) => {
-    p.value = { active: true, phase: ev.phase, index: ev.index, total: ev.total, name: ev.name }
+    p.value = { active: true, phase: ev.phase, index: ev.index, total: ev.total, name: ev.name, ai: ev.ai || 0 }
   })
 }
 
